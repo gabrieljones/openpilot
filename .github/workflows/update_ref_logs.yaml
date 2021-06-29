@@ -1,6 +1,7 @@
 name: update_ref_logs
 on:
   workflow_dispatch:
+    inputs:
 
 env:
   BASE_IMAGE: openpilot-base
