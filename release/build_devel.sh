@@ -1,78 +1,83 @@
-#!/usr/bin/bash -e
+#!/usr/bin/bash
 
-SOURCE_DIR=/data/openpilot_source
-TARGET_DIR=/data/openpilot
+set -ex
 
-ln -sf $TARGET_DIR /data/pythonpath
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 
-export GIT_COMMITTER_NAME="Vehicle Researcher"
-export GIT_COMMITTER_EMAIL="user@comma.ai"
-export GIT_AUTHOR_NAME="Vehicle Researcher"
-export GIT_AUTHOR_EMAIL="user@comma.ai"
-export GIT_SSH_COMMAND="ssh -i /data/gitkey"
-
-echo "[-] Setting up repo T=$SECONDS"
-if [ ! -d "$TARGET_DIR" ]; then
-  mkdir -p $TARGET_DIR
-  cd $TARGET_DIR
-  git init
-  git remote add origin git@github.com:commaai/openpilot.git
+SOURCE_DIR="$(git -C $DIR rev-parse --show-toplevel)"
+if [ -z "$TARGET_DIR" ]; then
+  TARGET_DIR="$(mktemp -d)"
 fi
 
-echo "[-] fetching public T=$SECONDS"
+# set git identity
+source $DIR/identity.sh
+
+echo "[-] Setting up target repo T=$SECONDS"
+
+rm -rf $TARGET_DIR
+mkdir -p $TARGET_DIR
 cd $TARGET_DIR
-git prune || true
-git remote prune origin || true
+cp -r $SOURCE_DIR/.git $TARGET_DIR
+pre-commit uninstall || true
 
 echo "[-] bringing master-ci and devel in sync T=$SECONDS"
-git fetch origin master-ci
-git fetch origin devel
+cd $TARGET_DIR
+git fetch --depth 1 origin master-ci
+git fetch --depth 1 origin devel
 
 git checkout -f --track origin/master-ci
 git reset --hard master-ci
 git checkout master-ci
 git reset --hard origin/devel
-git clean -xdf
+git clean -xdff
+git lfs uninstall
 
 # remove everything except .git
 echo "[-] erasing old openpilot T=$SECONDS"
 find . -maxdepth 1 -not -path './.git' -not -name '.' -not -name '..' -exec rm -rf '{}' \;
 
-# reset tree and get version
+# reset source tree
 cd $SOURCE_DIR
-git clean -xdf
-git checkout -- selfdrive/common/version.h
-
-VERSION=$(cat selfdrive/common/version.h | awk -F\" '{print $2}')
-echo "#define COMMA_VERSION \"$VERSION-$(git --git-dir=$SOURCE_DIR/.git rev-parse --short HEAD)-$(date '+%Y-%m-%dT%H:%M:%S')\"" > selfdrive/common/version.h
+git clean -xdff
 
 # do the files copy
 echo "[-] copying files T=$SECONDS"
 cd $SOURCE_DIR
-cp -pR --parents $(cat release/files_common) $TARGET_DIR/
-
-# test files
-if [ ! -z "$DEVEL_TEST" ]; then
-  cp -pR --parents tools/ $TARGET_DIR/
+cp -pR --parents $(cat release/files_*) $TARGET_DIR/
+if [ ! -z "$EXTRA_FILES" ]; then
+  cp -pR --parents $EXTRA_FILES $TARGET_DIR/
 fi
 
 # in the directory
 cd $TARGET_DIR
-
 rm -f panda/board/obj/panda.bin.signed
+
+# include source commit hash and build date in commit
+GIT_HASH=$(git --git-dir=$SOURCE_DIR/.git rev-parse HEAD)
+DATETIME=$(date '+%Y-%m-%dT%H:%M:%S')
+VERSION=$(cat $SOURCE_DIR/common/version.h | awk -F\" '{print $2}')
 
 echo "[-] committing version $VERSION T=$SECONDS"
 git add -f .
 git status
-git commit -a -m "openpilot v$VERSION release"
+git commit -a -m "openpilot v$VERSION release
 
-# Run build
-selfdrive/manager/build.py
+date: $DATETIME
+master commit: $GIT_HASH
+"
 
-if [ ! -z "$CI_PUSH" ]; then
-  echo "[-] Pushing to $CI_PUSH T=$SECONDS"
-  git remote set-url origin git@github.com:commaai/openpilot.git
-  git push -f origin master-ci:$CI_PUSH
+# ensure files are within GitHub's limit
+BIG_FILES="$(find . -type f -not -path './.git/*' -size +95M)"
+if [ ! -z "$BIG_FILES" ]; then
+  printf '\n\n\n'
+  echo "Found files exceeding GitHub's 100MB limit:"
+  echo "$BIG_FILES"
+  exit 1
 fi
 
-echo "[-] done T=$SECONDS"
+if [ ! -z "$BRANCH" ]; then
+  echo "[-] Pushing to $BRANCH T=$SECONDS"
+  git push -f origin master-ci:$BRANCH
+fi
+
+echo "[-] done T=$SECONDS, ready at $TARGET_DIR"

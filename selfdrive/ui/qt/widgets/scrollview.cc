@@ -3,23 +3,25 @@
 #include <QScrollBar>
 #include <QScroller>
 
+// TODO: disable horizontal scrolling and resize
+
 ScrollView::ScrollView(QWidget *w, QWidget *parent) : QScrollArea(parent) {
   setWidget(w);
   setWidgetResizable(true);
   setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  setStyleSheet("ScrollView { background-color:transparent; }");
+  setStyleSheet("background-color: transparent;");
 
   QString style = R"(
     QScrollBar:vertical {
       border: none;
       background: transparent;
-      width:10px;
+      width: 10px;
       margin: 0;
     }
     QScrollBar::handle:vertical {
       min-height: 0px;
-      border-radius: 4px;
+      border-radius: 5px;
       background-color: white;
     }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
@@ -29,7 +31,6 @@ ScrollView::ScrollView(QWidget *w, QWidget *parent) : QScrollArea(parent) {
       background: none;
     }
   )";
-
   verticalScrollBar()->setStyleSheet(style);
   horizontalScrollBar()->setStyleSheet(style);
 
@@ -38,7 +39,7 @@ ScrollView::ScrollView(QWidget *w, QWidget *parent) : QScrollArea(parent) {
 
   sp.setScrollMetric(QScrollerProperties::VerticalOvershootPolicy, QVariant::fromValue<QScrollerProperties::OvershootPolicy>(QScrollerProperties::OvershootAlwaysOff));
   sp.setScrollMetric(QScrollerProperties::HorizontalOvershootPolicy, QVariant::fromValue<QScrollerProperties::OvershootPolicy>(QScrollerProperties::OvershootAlwaysOff));
-
+  sp.setScrollMetric(QScrollerProperties::MousePressEventDelay, 0.01);
   scroller->grabGesture(this->viewport(), QScroller::LeftMouseButtonGesture);
   scroller->setScrollerProperties(sp);
 }

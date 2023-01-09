@@ -53,7 +53,7 @@ class TestUpdated(unittest.TestCase):
       f"cd {self.basedir} && scons -j{os.cpu_count()} cereal/ common/"
     ])
 
-    self.params = Params(db=os.path.join(self.basedir, "persist/params"))
+    self.params = Params(os.path.join(self.basedir, "persist/params"))
     self.params.clear_all()
     os.sync()
 
@@ -113,12 +113,12 @@ class TestUpdated(unittest.TestCase):
 
   def _wait_for_update(self, timeout=30, clear_param=False):
     if clear_param:
-      self.params.delete("LastUpdateTime")
+      self.params.remove("LastUpdateTime")
 
     self._update_now()
     t = self._read_param("LastUpdateTime", timeout=timeout)
     if t is None:
-      raise Exception("timed out waiting for update to complate")
+      raise Exception("timed out waiting for update to complete")
 
   def _make_commit(self):
     all_dirs, all_files = [], []
@@ -166,7 +166,7 @@ class TestUpdated(unittest.TestCase):
     last_update_time = datetime.datetime.fromisoformat(t)
     td = datetime.datetime.utcnow() - last_update_time
     self.assertLess(td.total_seconds(), 10)
-    self.params.delete("LastUpdateTime")
+    self.params.remove("LastUpdateTime")
 
     # wait a bit for the rest of the params to be written
     time.sleep(0.1)
@@ -232,7 +232,7 @@ class TestUpdated(unittest.TestCase):
 
     # run for a cycle with no update
     self._wait_for_update(clear_param=True)
-    self.params.delete("LastUpdateTime")
+    self.params.remove("LastUpdateTime")
     first_mtime = os.path.getmtime(overlay_init_fn)
 
     # touch a file in the basedir

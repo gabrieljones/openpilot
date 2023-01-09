@@ -1,10 +1,14 @@
 moc_*
 *.moc
 
-replay/replay
+translations/main_test_en.*
+
+_mui
+watch3
+installer/installers/*
 qt/text
 qt/spinner
 qt/setup/setup
 qt/setup/reset
 qt/setup/wifi
-qt/setup/installer*
+qt/setup/updater

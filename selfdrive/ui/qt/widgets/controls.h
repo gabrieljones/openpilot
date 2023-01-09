@@ -3,35 +3,77 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
 #include <QPushButton>
 
-#include "selfdrive/common/params.h"
+#include "common/params.h"
+#include "selfdrive/ui/qt/widgets/input.h"
 #include "selfdrive/ui/qt/widgets/toggle.h"
 
 QFrame *horizontal_line(QWidget *parent = nullptr);
+
+class ElidedLabel : public QLabel {
+  Q_OBJECT
+
+public:
+  explicit ElidedLabel(QWidget *parent = 0);
+  explicit ElidedLabel(const QString &text, QWidget *parent = 0);
+
+signals:
+  void clicked();
+
+protected:
+  void paintEvent(QPaintEvent *event) override;
+  void resizeEvent(QResizeEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent *event) override {
+    if (rect().contains(event->pos())) {
+      emit clicked();
+    }
+  }
+  QString lastText_, elidedText_;
+};
+
+
 class AbstractControl : public QFrame {
   Q_OBJECT
 
 public:
   void setDescription(const QString &desc) {
-    if(description) description->setText(desc);
+    if (description) description->setText(desc);
   }
 
+  void setTitle(const QString &title) {
+    title_label->setText(title);
+  }
+
+  void setValue(const QString &val) {
+    value->setText(val);
+  }
+
+  const QString getDescription() {
+    return description->text();
+  }
+
+  QLabel *icon_label;
+  QPixmap icon_pixmap;
+
+public slots:
+  void showDescription() {
+    description->setVisible(true);
+  };
+
 signals:
-  void showDescription();
+  void showDescriptionEvent();
 
 protected:
   AbstractControl(const QString &title, const QString &desc = "", const QString &icon = "", QWidget *parent = nullptr);
   void hideEvent(QHideEvent *e) override;
 
-  QSize minimumSizeHint() const override {
-    QSize size = QFrame::minimumSizeHint();
-    size.setHeight(120);
-    return size;
-  };
-
   QHBoxLayout *hlayout;
   QPushButton *title_label;
+
+private:
+  ElidedLabel *value;
   QLabel *description = nullptr;
 };
 
@@ -48,7 +90,7 @@ public:
   void setText(const QString &text) { label.setText(text); }
 
 private:
-  QLabel label;
+  ElidedLabel label;
 };
 
 // widget for a button with a label
@@ -61,7 +103,7 @@ public:
   inline QString text() const { return btn.text(); }
 
 signals:
-  void released();
+  void clicked();
 
 public slots:
   void setEnabled(bool enabled) { btn.setEnabled(enabled); };
@@ -83,7 +125,10 @@ public:
     QObject::connect(&toggle, &Toggle::stateChanged, this, &ToggleControl::toggleFlipped);
   }
 
-  void setEnabled(bool enabled) { toggle.setEnabled(enabled); }
+  void setEnabled(bool enabled) {
+    toggle.setEnabled(enabled);
+    toggle.update();
+  }
 
 signals:
   void toggleFlipped(bool state);
@@ -98,14 +143,112 @@ class ParamControl : public ToggleControl {
 
 public:
   ParamControl(const QString &param, const QString &title, const QString &desc, const QString &icon, QWidget *parent = nullptr) : ToggleControl(title, desc, icon, false, parent) {
-    if (params.getBool(param.toStdString().c_str())) {
-      toggle.togglePosition();
-    }
-    QObject::connect(this, &ToggleControl::toggleFlipped, [=](bool state) {
-      params.putBool(param.toStdString().c_str(), state);
+    key = param.toStdString();
+    QObject::connect(this, &ParamControl::toggleFlipped, [=](bool state) {
+      QString content("<body><h2 style=\"text-align: center;\">" + title + "</h2><br>"
+                      "<p style=\"text-align: center; margin: 0 128px; font-size: 50px;\">" + getDescription() + "</p></body>");
+      ConfirmationDialog dialog(content, tr("Enable"), tr("Cancel"), true, this);
+
+      bool confirmed = store_confirm && params.getBool(key + "Confirmed");
+      if (!confirm || confirmed || !state || dialog.exec()) {
+        if (store_confirm && state) params.putBool(key + "Confirmed", true);
+        params.putBool(key, state);
+        setIcon(state);
+      } else {
+        toggle.togglePosition();
+      }
     });
   }
 
+  void setConfirmation(bool _confirm, bool _store_confirm) {
+    confirm = _confirm;
+    store_confirm = _store_confirm;
+  };
+
+  void setActiveIcon(const QString &icon) {
+    active_icon_pixmap = QPixmap(icon).scaledToWidth(80, Qt::SmoothTransformation);
+  }
+
+  void refresh() {
+    bool state = params.getBool(key);
+    if (state != toggle.on) {
+      toggle.togglePosition();
+      setIcon(state);
+    }
+  };
+
+  void showEvent(QShowEvent *event) override {
+    refresh();
+  };
+
 private:
+  void setIcon(bool state) {
+    if (state && !active_icon_pixmap.isNull()) {
+      icon_label->setPixmap(active_icon_pixmap);
+    } else if (!icon_pixmap.isNull()) {
+      icon_label->setPixmap(icon_pixmap);
+    }
+  };
+
+  std::string key;
   Params params;
+  QPixmap active_icon_pixmap;
+  bool confirm = false;
+  bool store_confirm = false;
+};
+
+class ListWidget : public QWidget {
+  Q_OBJECT
+ public:
+  explicit ListWidget(QWidget *parent = 0) : QWidget(parent), outer_layout(this) {
+    outer_layout.setMargin(0);
+    outer_layout.setSpacing(0);
+    outer_layout.addLayout(&inner_layout);
+    inner_layout.setMargin(0);
+    inner_layout.setSpacing(25); // default spacing is 25
+    outer_layout.addStretch();
+  }
+  inline void addItem(QWidget *w) { inner_layout.addWidget(w); }
+  inline void addItem(QLayout *layout) { inner_layout.addLayout(layout); }
+  inline void setSpacing(int spacing) { inner_layout.setSpacing(spacing); }
+
+private:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.setPen(Qt::gray);
+    for (int i = 0; i < inner_layout.count() - 1; ++i) {
+      QWidget *widget = inner_layout.itemAt(i)->widget();
+      if (widget == nullptr || widget->isVisible()) {
+        QRect r = inner_layout.itemAt(i)->geometry();
+        int bottom = r.bottom() + inner_layout.spacing() / 2;
+        p.drawLine(r.left() + 40, bottom, r.right() - 40, bottom);
+      }
+    }
+  }
+  QVBoxLayout outer_layout;
+  QVBoxLayout inner_layout;
+};
+
+// convenience class for wrapping layouts
+class LayoutWidget : public QWidget {
+  Q_OBJECT
+
+public:
+  LayoutWidget(QLayout *l, QWidget *parent = nullptr) : QWidget(parent) {
+    setLayout(l);
+  };
+};
+
+class ClickableWidget : public QWidget {
+  Q_OBJECT
+
+public:
+  ClickableWidget(QWidget *parent = nullptr);
+
+protected:
+  void mouseReleaseEvent(QMouseEvent *event) override;
+  void paintEvent(QPaintEvent *) override;
+
+signals:
+  void clicked();
 };

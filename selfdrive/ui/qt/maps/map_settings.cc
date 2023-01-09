@@ -2,23 +2,27 @@
 
 #include <QDebug>
 
+#include "common/util.h"
+#include "selfdrive/ui/qt/util.h"
 #include "selfdrive/ui/qt/request_repeater.h"
 #include "selfdrive/ui/qt/widgets/controls.h"
-#include "selfdrive/ui/qt/util.h"
-#include "selfdrive/common/util.h"
+#include "selfdrive/ui/qt/widgets/scrollview.h"
 
 static QString shorten(const QString &str, int max_len) {
   return str.size() > max_len ? str.left(max_len).trimmed() + "…" : str;
 }
 
 MapPanel::MapPanel(QWidget* parent) : QWidget(parent) {
-  QVBoxLayout *main_layout = new QVBoxLayout(this);
-  Params params = Params();
+  stack = new QStackedWidget;
+
+  QWidget * main_widget = new QWidget;
+  QVBoxLayout *main_layout = new QVBoxLayout(main_widget);
+  const int icon_size = 200;
 
   // Home
   QHBoxLayout *home_layout = new QHBoxLayout;
   home_button = new QPushButton;
-  home_button->setIconSize(QSize(200, 200));
+  home_button->setIconSize(QSize(icon_size, icon_size));
   home_layout->addWidget(home_button);
 
   home_address = new QLabel;
@@ -30,7 +34,7 @@ MapPanel::MapPanel(QWidget* parent) : QWidget(parent) {
   // Work
   QHBoxLayout *work_layout = new QHBoxLayout;
   work_button = new QPushButton;
-  work_button->setIconSize(QSize(200, 200));
+  work_button->setIconSize(QSize(icon_size, icon_size));
   work_layout->addWidget(work_button);
 
   work_address = new QLabel;
@@ -46,78 +50,161 @@ MapPanel::MapPanel(QWidget* parent) : QWidget(parent) {
   home_work_layout->addLayout(work_layout, 1);
 
   main_layout->addLayout(home_work_layout);
-  main_layout->addSpacing(50);
+  main_layout->addSpacing(20);
   main_layout->addWidget(horizontal_line());
-  main_layout->addSpacing(50);
+  main_layout->addSpacing(20);
+
+  // Current route
+  {
+    current_widget = new QWidget(this);
+    QVBoxLayout *current_layout = new QVBoxLayout(current_widget);
+
+    QLabel *title = new QLabel(tr("Current Destination"));
+    title->setStyleSheet("font-size: 55px");
+    current_layout->addWidget(title);
+
+    current_route = new ButtonControl("", tr("CLEAR"));
+    current_route->setStyleSheet("padding-left: 40px;");
+    current_layout->addWidget(current_route);
+    QObject::connect(current_route, &ButtonControl::clicked, [=]() {
+      params.remove("NavDestination");
+      updateCurrentRoute();
+    });
+
+    current_layout->addSpacing(10);
+    current_layout->addWidget(horizontal_line());
+    current_layout->addSpacing(20);
+  }
+  main_layout->addWidget(current_widget);
 
   // Recents
-  QLabel *recent = new QLabel("Recent");
-  recent->setStyleSheet(R"(font-size: 55px;)");
-  main_layout->addWidget(recent);
-
+  QLabel *recents_title = new QLabel(tr("Recent Destinations"));
+  recents_title->setStyleSheet("font-size: 55px");
+  main_layout->addWidget(recents_title);
   main_layout->addSpacing(20);
 
   recent_layout = new QVBoxLayout;
-  main_layout->addLayout(recent_layout);
+  QWidget *recent_widget = new LayoutWidget(recent_layout, this);
+  ScrollView *recent_scroller = new ScrollView(recent_widget, this);
+  main_layout->addWidget(recent_scroller);
 
-  // Settings
-  main_layout->addSpacing(50);
-  main_layout->addWidget(horizontal_line());
-  main_layout->addWidget(new ParamControl("NavSettingTime24h",
-                                    "Show ETA in 24h format",
-                                    "Use 24h format instead of am/pm",
-                                    "",
-                                    this));
-  main_layout->addStretch();
+  // No prime upsell
+  QWidget * no_prime_widget = new QWidget;
+  {
+    QVBoxLayout *no_prime_layout = new QVBoxLayout(no_prime_widget);
+    QLabel *signup_header = new QLabel(tr("Try the Navigation Beta"));
+    signup_header->setStyleSheet(R"(font-size: 75px; color: white; font-weight:600;)");
+    signup_header->setAlignment(Qt::AlignCenter);
+
+    no_prime_layout->addWidget(signup_header);
+    no_prime_layout->addSpacing(50);
+
+    QLabel *screenshot = new QLabel;
+    QPixmap pm = QPixmap("../assets/navigation/screenshot.png");
+    screenshot->setPixmap(pm.scaledToWidth(1080, Qt::SmoothTransformation));
+    no_prime_layout->addWidget(screenshot, 0, Qt::AlignHCenter);
+
+    QLabel *signup = new QLabel(tr("Get turn-by-turn directions displayed and more with a comma\nprime subscription. Sign up now: https://connect.comma.ai"));
+    signup->setStyleSheet(R"(font-size: 45px; color: white; font-weight:300;)");
+    signup->setAlignment(Qt::AlignCenter);
+
+    no_prime_layout->addSpacing(20);
+    no_prime_layout->addWidget(signup);
+    no_prime_layout->addStretch();
+  }
+
+  stack->addWidget(main_widget);
+  stack->addWidget(no_prime_widget);
+  connect(uiState(), &UIState::primeTypeChanged, [=](int prime_type) {
+    stack->setCurrentIndex(prime_type ? 0 : 1);
+  });
+
+  QVBoxLayout *wrapper = new QVBoxLayout(this);
+  wrapper->addWidget(stack);
+
 
   clear();
 
-  std::string dongle_id = Params().get("DongleId");
-  if (util::is_valid_dongle_id(dongle_id)) {
+  if (auto dongle_id = getDongleId()) {
     // Fetch favorite and recent locations
     {
-      std::string url = "https://api.commadotai.com/v1/navigation/" + dongle_id + "/locations";
-      RequestRepeater* repeater = new RequestRepeater(this, QString::fromStdString(url), "ApiCache_NavDestinations", 30);
-      QObject::connect(repeater, &RequestRepeater::receivedResponse, this, &MapPanel::parseResponse);
+      QString url = CommaApi::BASE_URL + "/v1/navigation/" + *dongle_id + "/locations";
+      RequestRepeater* repeater = new RequestRepeater(this, url, "ApiCache_NavDestinations", 30, true);
+      QObject::connect(repeater, &RequestRepeater::requestDone, this, &MapPanel::parseResponse);
     }
 
     // Destination set while offline
     {
-      std::string url = "https://api.commadotai.com/v1/navigation/" + dongle_id + "/next";
-      RequestRepeater* repeater = new RequestRepeater(this, QString::fromStdString(url), "", 10, true);
+      QString url = CommaApi::BASE_URL + "/v1/navigation/" + *dongle_id + "/next";
+      RequestRepeater* repeater = new RequestRepeater(this, url, "", 10, true);
+      HttpRequest* deleter = new HttpRequest(this);
 
-      QObject::connect(repeater, &RequestRepeater::receivedResponse, [](QString resp) {
-        auto params = Params();
-        if (resp != "null" && params.get("NavDestination").empty()) {
-          params.put("NavDestination", resp.toStdString());
+      QObject::connect(repeater, &RequestRepeater::requestDone, [=](const QString &resp, bool success) {
+        if (success && resp != "null") {
+          if (params.get("NavDestination").empty()) {
+            qWarning() << "Setting NavDestination from /next" << resp;
+            params.put("NavDestination", resp.toStdString());
+          } else {
+            qWarning() << "Got location from /next, but NavDestination already set";
+          }
+
+          // Send DELETE to clear destination server side
+          deleter->sendRequest(url, HttpRequest::Method::DELETE);
         }
       });
     }
   }
 }
 
+void MapPanel::showEvent(QShowEvent *event) {
+  updateCurrentRoute();
+  refresh();
+}
+
 void MapPanel::clear() {
   home_button->setIcon(QPixmap("../assets/navigation/home_inactive.png"));
   home_address->setStyleSheet(R"(font-size: 50px; color: grey;)");
-  home_address->setText("No home\nlocation set");
+  home_address->setText(tr("No home\nlocation set"));
   home_button->disconnect();
 
   work_button->setIcon(QPixmap("../assets/navigation/work_inactive.png"));
   work_address->setStyleSheet(R"(font-size: 50px; color: grey;)");
-  work_address->setText("No work\nlocation set");
+  work_address->setText(tr("No work\nlocation set"));
   work_button->disconnect();
 
   clearLayout(recent_layout);
 }
 
+void MapPanel::updateCurrentRoute() {
+  auto dest = QString::fromStdString(params.get("NavDestination"));
+  QJsonDocument doc = QJsonDocument::fromJson(dest.trimmed().toUtf8());
+  if (dest.size() && !doc.isNull()) {
+    auto name = doc["place_name"].toString();
+    auto details = doc["place_details"].toString();
+    current_route->setTitle(shorten(name + " " + details, 42));
+  }
+  current_widget->setVisible(dest.size() && !doc.isNull());
+}
 
-void MapPanel::parseResponse(const QString &response) {
-  QJsonDocument doc = QJsonDocument::fromJson(response.trimmed().toUtf8());
+void MapPanel::parseResponse(const QString &response, bool success) {
+  if (!success) return;
+
+  cur_destinations = response;
+  if (isVisible()) {
+    refresh();
+  }
+}
+
+void MapPanel::refresh() {
+  if (cur_destinations == prev_destinations) return;
+
+  QJsonDocument doc = QJsonDocument::fromJson(cur_destinations.trimmed().toUtf8());
   if (doc.isNull()) {
     qDebug() << "JSON Parse failed on navigation locations";
     return;
   }
 
+  prev_destinations = cur_destinations;
   clear();
 
   bool has_recents = false;
@@ -151,7 +238,7 @@ void MapPanel::parseResponse(const QString &response) {
       } else {
         ClickableWidget *widget = new ClickableWidget;
         QHBoxLayout *layout = new QHBoxLayout(widget);
-        layout->setContentsMargins(15, 10, 40, 10);
+        layout->setContentsMargins(15, 14, 40, 14);
 
         QLabel *star = new QLabel("★");
         auto sp = star->sizePolicy();
@@ -201,13 +288,16 @@ void MapPanel::parseResponse(const QString &response) {
   }
 
   if (!has_recents) {
-    QLabel *no_recents = new QLabel("  no recent destinations");
+    QLabel *no_recents = new QLabel(tr("no recent destinations"));
     no_recents->setStyleSheet(R"(font-size: 50px; color: #9c9c9c)");
     recent_layout->addWidget(no_recents);
   }
+
+  recent_layout->addStretch();
+  repaint();
 }
 
 void MapPanel::navigateTo(const QJsonObject &place) {
   QJsonDocument doc(place);
-  Params().put("NavDestination", doc.toJson().toStdString());
+  params.put("NavDestination", doc.toJson().toStdString());
 }

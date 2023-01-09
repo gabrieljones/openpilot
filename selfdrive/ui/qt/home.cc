@@ -1,17 +1,13 @@
 #include "selfdrive/ui/qt/home.h"
 
-#include <QDateTime>
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QVBoxLayout>
 
-#include "selfdrive/common/params.h"
-#include "selfdrive/common/swaglog.h"
-#include "selfdrive/common/timing.h"
-#include "selfdrive/common/util.h"
+#include "selfdrive/ui/qt/offroad/experimental_mode.h"
 #include "selfdrive/ui/qt/util.h"
 #include "selfdrive/ui/qt/widgets/drive_stats.h"
-#include "selfdrive/ui/qt/widgets/setup.h"
+#include "selfdrive/ui/qt/widgets/prime.h"
 
 // HomeWindow: the container for the offroad and onroad UIs
 
@@ -22,40 +18,54 @@ HomeWindow::HomeWindow(QWidget* parent) : QWidget(parent) {
 
   sidebar = new Sidebar(this);
   main_layout->addWidget(sidebar);
-  QObject::connect(this, &HomeWindow::update, sidebar, &Sidebar::updateState);
   QObject::connect(sidebar, &Sidebar::openSettings, this, &HomeWindow::openSettings);
 
   slayout = new QStackedLayout();
   main_layout->addLayout(slayout);
 
+  home = new OffroadHome(this);
+  QObject::connect(home, &OffroadHome::openSettings, this, &HomeWindow::openSettings);
+  slayout->addWidget(home);
+
   onroad = new OnroadWindow(this);
   slayout->addWidget(onroad);
 
-  QObject::connect(this, &HomeWindow::update, onroad, &OnroadWindow::update);
-  QObject::connect(this, &HomeWindow::offroadTransitionSignal, onroad, &OnroadWindow::offroadTransitionSignal);
-
-  home = new OffroadHome();
-  slayout->addWidget(home);
+  body = new BodyWindow(this);
+  slayout->addWidget(body);
 
   driver_view = new DriverViewWindow(this);
   connect(driver_view, &DriverViewWindow::done, [=] {
     showDriverView(false);
   });
   slayout->addWidget(driver_view);
+  setAttribute(Qt::WA_NoSystemBackground);
+  QObject::connect(uiState(), &UIState::uiUpdate, this, &HomeWindow::updateState);
+  QObject::connect(uiState(), &UIState::offroadTransition, this, &HomeWindow::offroadTransition);
+  QObject::connect(uiState(), &UIState::offroadTransition, sidebar, &Sidebar::offroadTransition);
 }
 
 void HomeWindow::showSidebar(bool show) {
   sidebar->setVisible(show);
 }
 
+void HomeWindow::updateState(const UIState &s) {
+  const SubMaster &sm = *(s.sm);
+
+  // switch to the generic robot UI
+  if (onroad->isVisible() && !body->isEnabled() && sm["carParams"].getCarParams().getNotCar()) {
+    body->setEnabled(true);
+    slayout->setCurrentWidget(body);
+  }
+}
+
 void HomeWindow::offroadTransition(bool offroad) {
+  body->setEnabled(false);
+  sidebar->setVisible(offroad);
   if (offroad) {
     slayout->setCurrentWidget(home);
   } else {
     slayout->setCurrentWidget(onroad);
   }
-  sidebar->setVisible(offroad);
-  emit offroadTransitionSignal(offroad);
 }
 
 void HomeWindow::showDriverView(bool show) {
@@ -70,19 +80,21 @@ void HomeWindow::showDriverView(bool show) {
 
 void HomeWindow::mousePressEvent(QMouseEvent* e) {
   // Handle sidebar collapsing
-  if (onroad->isVisible() && (!sidebar->isVisible() || e->x() > sidebar->width())) {
+  if ((onroad->isVisible() || body->isVisible()) && (!sidebar->isVisible() || e->x() > sidebar->width())) {
+    sidebar->setVisible(!sidebar->isVisible() && !onroad->isMapVisible());
+  }
+}
 
-    // TODO: Handle this without exposing pointer to map widget
-    // Hide map first if visible, then hide sidebar
-    if (onroad->map != nullptr && onroad->map->isVisible()) {
-      onroad->map->setVisible(false);
-    } else if (!sidebar->isVisible()) {
-      sidebar->setVisible(true);
-    } else {
-      sidebar->setVisible(false);
-
-      if (onroad->map != nullptr) onroad->map->setVisible(true);
+void HomeWindow::mouseDoubleClickEvent(QMouseEvent* e) {
+  HomeWindow::mousePressEvent(e);
+  const SubMaster &sm = *(uiState()->sm);
+  if (sm["carParams"].getCarParams().getNotCar()) {
+    if (onroad->isVisible()) {
+      slayout->setCurrentWidget(body);
+    } else if (body->isVisible()) {
+      slayout->setCurrentWidget(onroad);
     }
+    showSidebar(false);
   }
 }
 
@@ -90,21 +102,26 @@ void HomeWindow::mousePressEvent(QMouseEvent* e) {
 
 OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   QVBoxLayout* main_layout = new QVBoxLayout(this);
-  main_layout->setMargin(50);
+  main_layout->setContentsMargins(40, 40, 40, 45);
 
   // top header
   QHBoxLayout* header_layout = new QHBoxLayout();
+  header_layout->setContentsMargins(15, 15, 15, 0);
+  header_layout->setSpacing(16);
 
-  date = new QLabel();
-  header_layout->addWidget(date, 0, Qt::AlignHCenter | Qt::AlignLeft);
+  update_notif = new QPushButton(tr("UPDATE"));
+  update_notif->setVisible(false);
+  update_notif->setStyleSheet("background-color: #364DEF;");
+  QObject::connect(update_notif, &QPushButton::clicked, [=]() { center_layout->setCurrentIndex(1); });
+  header_layout->addWidget(update_notif, 0, Qt::AlignHCenter | Qt::AlignLeft);
 
-  alert_notification = new QPushButton();
-  alert_notification->setObjectName("alert_notification");
-  alert_notification->setVisible(false);
-  QObject::connect(alert_notification, &QPushButton::released, this, &OffroadHome::openAlerts);
-  header_layout->addWidget(alert_notification, 0, Qt::AlignHCenter | Qt::AlignRight);
+  alert_notif = new QPushButton();
+  alert_notif->setVisible(false);
+  alert_notif->setStyleSheet("background-color: #E22C2C;");
+  QObject::connect(alert_notif, &QPushButton::clicked, [=] { center_layout->setCurrentIndex(2); });
+  header_layout->addWidget(alert_notif, 0, Qt::AlignHCenter | Qt::AlignLeft);
 
-  QLabel* version = new QLabel(getBrandVersion());
+  version = new ElidedLabel();
   header_layout->addWidget(version, 0, Qt::AlignHCenter | Qt::AlignRight);
 
   main_layout->addLayout(header_layout);
@@ -113,32 +130,41 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
   main_layout->addSpacing(25);
   center_layout = new QStackedLayout();
 
-  QHBoxLayout* statsAndSetup = new QHBoxLayout();
+  // Vertical experimental button and drive stats layout
+  QWidget* statsAndExperimentalModeButtonWidget = new QWidget(this);
+  QVBoxLayout* statsAndExperimentalModeButton = new QVBoxLayout(statsAndExperimentalModeButtonWidget);
+  statsAndExperimentalModeButton->setSpacing(30);
+  statsAndExperimentalModeButton->setMargin(0);
+
+  ExperimentalModeButton *experimental_mode = new ExperimentalModeButton(this);
+  QObject::connect(experimental_mode, &ExperimentalModeButton::openSettings, this, &OffroadHome::openSettings);
+
+  statsAndExperimentalModeButton->addWidget(experimental_mode, 1);
+  statsAndExperimentalModeButton->addWidget(new DriveStats, 1);
+
+  // Horizontal experimental + drive stats and setup widget
+  QWidget* statsAndSetupWidget = new QWidget(this);
+  QHBoxLayout* statsAndSetup = new QHBoxLayout(statsAndSetupWidget);
   statsAndSetup->setMargin(0);
-
-  DriveStats* drive = new DriveStats;
-  drive->setFixedSize(800, 800);
-  statsAndSetup->addWidget(drive);
-
-  SetupWidget* setup = new SetupWidget;
-  statsAndSetup->addWidget(setup);
-
-  QWidget* statsAndSetupWidget = new QWidget();
-  statsAndSetupWidget->setLayout(statsAndSetup);
+  statsAndSetup->setSpacing(30);
+  statsAndSetup->addWidget(statsAndExperimentalModeButtonWidget, 1);
+  statsAndSetup->addWidget(new SetupWidget);
 
   center_layout->addWidget(statsAndSetupWidget);
 
+  // add update & alerts widgets
+  update_widget = new UpdateAlert();
+  QObject::connect(update_widget, &UpdateAlert::dismiss, [=]() { center_layout->setCurrentIndex(0); });
+  center_layout->addWidget(update_widget);
   alerts_widget = new OffroadAlert();
-  QObject::connect(alerts_widget, &OffroadAlert::closeAlerts, this, &OffroadHome::closeAlerts);
+  QObject::connect(alerts_widget, &OffroadAlert::dismiss, [=]() { center_layout->setCurrentIndex(0); });
   center_layout->addWidget(alerts_widget);
-  center_layout->setAlignment(alerts_widget, Qt::AlignCenter);
 
   main_layout->addLayout(center_layout, 1);
 
   // set up refresh timer
   timer = new QTimer(this);
-  QObject::connect(timer, &QTimer::timeout, this, &OffroadHome::refresh);
-  timer->start(10 * 1000);
+  timer->callOnTimeout(this, &OffroadHome::refresh);
 
   setStyleSheet(R"(
     * {
@@ -147,16 +173,13 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
     OffroadHome {
       background-color: black;
     }
-    #alert_notification {
-      padding: 15px;
-      padding-left: 30px;
-      padding-right: 30px;
-      border: 1px solid;
+    OffroadHome > QPushButton {
+      padding: 15px 30px;
       border-radius: 5px;
       font-size: 40px;
       font-weight: 500;
     }
-    OffroadHome>QLabel {
+    OffroadHome > QLabel {
       font-size: 55px;
     }
   )");
@@ -164,44 +187,33 @@ OffroadHome::OffroadHome(QWidget* parent) : QFrame(parent) {
 
 void OffroadHome::showEvent(QShowEvent *event) {
   refresh();
+  timer->start(10 * 1000);
 }
 
-void OffroadHome::openAlerts() {
-  center_layout->setCurrentIndex(1);
-}
-
-void OffroadHome::closeAlerts() {
-  center_layout->setCurrentIndex(0);
+void OffroadHome::hideEvent(QHideEvent *event) {
+  timer->stop();
 }
 
 void OffroadHome::refresh() {
-  bool first_refresh = !date->text().size();
-  if (!isVisible() && !first_refresh) {
-    return;
+  version->setText(getBrand() + " " +  QString::fromStdString(params.get("UpdaterCurrentDescription")));
+
+  bool updateAvailable = update_widget->refresh();
+  int alerts = alerts_widget->refresh();
+
+  // pop-up new notification
+  int idx = center_layout->currentIndex();
+  if (!updateAvailable && !alerts) {
+    idx = 0;
+  } else if (updateAvailable && (!update_notif->isVisible() || (!alerts && idx == 2))) {
+    idx = 1;
+  } else if (alerts && (!alert_notif->isVisible() || (!updateAvailable && idx == 1))) {
+    idx = 2;
   }
+  center_layout->setCurrentIndex(idx);
 
-  date->setText(QDateTime::currentDateTime().toString("dddd, MMMM d"));
-
-  // update alerts
-
-  alerts_widget->refresh();
-  if (!alerts_widget->alertCount && !alerts_widget->updateAvailable) {
-    closeAlerts();
-    alert_notification->setVisible(false);
-    return;
+  update_notif->setVisible(updateAvailable);
+  alert_notif->setVisible(alerts);
+  if (alerts) {
+    alert_notif->setText(QString::number(alerts) + (alerts > 1 ? tr(" ALERTS") : tr(" ALERT")));
   }
-
-  if (alerts_widget->updateAvailable) {
-    alert_notification->setText("UPDATE");
-  } else {
-    int alerts = alerts_widget->alertCount;
-    alert_notification->setText(QString::number(alerts) + " ALERT" + (alerts == 1 ? "" : "S"));
-  }
-
-  if (!alert_notification->isVisible() && !first_refresh) {
-    openAlerts();
-  }
-  alert_notification->setVisible(true);
-  // Red background for alerts, blue for update available
-  alert_notification->setStyleSheet(alerts_widget->updateAvailable ? "background-color: #364DEF" : "background-color: #E22C2C");
 }

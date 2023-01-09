@@ -2,18 +2,15 @@
 
 #include <QMouseEvent>
 
-#include "selfdrive/ui/qt/qt_window.h"
-#include "selfdrive/common/util.h"
-#include "selfdrive/hardware/hw.h"
 #include "selfdrive/ui/qt/util.h"
 
-void Sidebar::drawMetric(QPainter &p, const QString &label, const QString &val, QColor c, int y) {
-  const QRect rect = {30, y, 240, val.isEmpty() ? (label.contains("\n") ? 124 : 100) : 148};
+void Sidebar::drawMetric(QPainter &p, const QPair<QString, QString> &label, QColor c, int y) {
+  const QRect rect = {30, y, 240, 126};
 
   p.setPen(Qt::NoPen);
   p.setBrush(QBrush(c));
-  p.setClipRect(rect.x() + 6, rect.y(), 18, rect.height(), Qt::ClipOperation::ReplaceClip);
-  p.drawRoundedRect(QRect(rect.x() + 6, rect.y() + 6, 100, rect.height() - 12), 10, 10);
+  p.setClipRect(rect.x() + 4, rect.y(), 18, rect.height(), Qt::ClipOperation::ReplaceClip);
+  p.drawRoundedRect(QRect(rect.x() + 4, rect.y() + 4, 100, 118), 18, 18);
   p.setClipping(false);
 
   QPen pen = QPen(QColor(0xff, 0xff, 0xff, 0x55));
@@ -23,36 +20,66 @@ void Sidebar::drawMetric(QPainter &p, const QString &label, const QString &val, 
   p.drawRoundedRect(rect, 20, 20);
 
   p.setPen(QColor(0xff, 0xff, 0xff));
-  if (val.isEmpty()) {
-    configFont(p, "Open Sans", 35, "Bold");
-    const QRect r = QRect(rect.x() + 35, rect.y(), rect.width() - 50, rect.height());
-    p.drawText(r, Qt::AlignCenter, label);
-  } else {
-    configFont(p, "Open Sans", 58, "Bold");
-    p.drawText(rect.x() + 50, rect.y() + 71, val);
-    configFont(p, "Open Sans", 35, "Regular");
-    p.drawText(rect.x() + 50, rect.y() + 50 + 77, label);
-  }
+  configFont(p, "Inter", 35, "SemiBold");
+
+  QRect label_rect = getTextRect(p, Qt::AlignCenter, label.first);
+  label_rect.setWidth(218);
+  label_rect.moveLeft(rect.left() + 22);
+  label_rect.moveTop(rect.top() + 19);
+  p.drawText(label_rect, Qt::AlignCenter, label.first);
+
+  label_rect.moveTop(rect.top() + 65);
+  p.drawText(label_rect, Qt::AlignCenter, label.second);
 }
 
-Sidebar::Sidebar(QWidget *parent) : QFrame(parent) {
-  home_img = QImage("../assets/images/button_home.png").scaled(180, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-  settings_img = QImage("../assets/images/button_settings.png").scaled(settings_btn.width(), settings_btn.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+Sidebar::Sidebar(QWidget *parent) : QFrame(parent), onroad(false), flag_pressed(false), settings_pressed(false) {
+  home_img = loadPixmap("../assets/images/button_home.png", home_btn.size());
+  flag_img = loadPixmap("../assets/images/button_flag.png", home_btn.size());
+  settings_img = loadPixmap("../assets/images/button_settings.png", settings_btn.size(), Qt::IgnoreAspectRatio);
 
   connect(this, &Sidebar::valueChanged, [=] { update(); });
 
+  setAttribute(Qt::WA_OpaquePaintEvent);
+  setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
   setFixedWidth(300);
-  setMinimumHeight(vwp_h);
-  setStyleSheet("background-color: rgb(57, 57, 57);");
+
+  QObject::connect(uiState(), &UIState::uiUpdate, this, &Sidebar::updateState);
+
+  pm = std::make_unique<PubMaster, const std::initializer_list<const char *>>({"userFlag"});
 }
 
 void Sidebar::mousePressEvent(QMouseEvent *event) {
-  if (settings_btn.contains(event->pos())) {
+  if (onroad && home_btn.contains(event->pos())) {
+    flag_pressed = true;
+    update();
+  } else if (settings_btn.contains(event->pos())) {
+    settings_pressed = true;
+    update();
+  }
+}
+
+void Sidebar::mouseReleaseEvent(QMouseEvent *event) {
+  if (flag_pressed || settings_pressed) {
+    flag_pressed = settings_pressed = false;
+    update();
+  }
+  if (home_btn.contains(event->pos())) {
+    MessageBuilder msg;
+    msg.initEvent().initUserFlag();
+    pm->send("userFlag", msg);
+  } else if (settings_btn.contains(event->pos())) {
     emit openSettings();
   }
 }
 
+void Sidebar::offroadTransition(bool offroad) {
+  onroad = !offroad;
+  update();
+}
+
 void Sidebar::updateState(const UIState &s) {
+  if (!isVisible()) return;
+
   auto &sm = *(s.sm);
 
   auto deviceState = sm["deviceState"].getDeviceState();
@@ -60,37 +87,31 @@ void Sidebar::updateState(const UIState &s) {
   int strength = (int)deviceState.getNetworkStrength();
   setProperty("netStrength", strength > 0 ? strength + 1 : 0);
 
+  ItemStatus connectStatus;
   auto last_ping = deviceState.getLastAthenaPingTime();
   if (last_ping == 0) {
-    setProperty("connectStr", "OFFLINE");
-    setProperty("connectStatus", warning_color);
+    connectStatus = ItemStatus{{tr("CONNECT"), tr("OFFLINE")}, warning_color};
   } else {
-    bool online = nanos_since_boot() - last_ping < 80e9;
-    setProperty("connectStr",  online ? "ONLINE" : "ERROR");
-    setProperty("connectStatus", online ? good_color : danger_color);
+    connectStatus = nanos_since_boot() - last_ping < 80e9 ? ItemStatus{{tr("CONNECT"), tr("ONLINE")}, good_color} : ItemStatus{{tr("CONNECT"), tr("ERROR")}, danger_color};
   }
+  setProperty("connectStatus", QVariant::fromValue(connectStatus));
 
-  QColor tempStatus = danger_color;
+  ItemStatus tempStatus = {{tr("TEMP"), tr("HIGH")}, danger_color};
   auto ts = deviceState.getThermalStatus();
   if (ts == cereal::DeviceState::ThermalStatus::GREEN) {
-    tempStatus = good_color;
+    tempStatus = {{tr("TEMP"), tr("GOOD")}, good_color};
   } else if (ts == cereal::DeviceState::ThermalStatus::YELLOW) {
-    tempStatus = warning_color;
+    tempStatus = {{tr("TEMP"), tr("OK")}, warning_color};
   }
-  setProperty("tempStatus", tempStatus);
-  setProperty("tempVal", (int)deviceState.getAmbientTempC());
+  setProperty("tempStatus", QVariant::fromValue(tempStatus));
 
-  QString pandaStr = "VEHICLE\nONLINE";
-  QColor pandaStatus = good_color;
+  ItemStatus pandaStatus = {{tr("VEHICLE"), tr("ONLINE")}, good_color};
   if (s.scene.pandaType == cereal::PandaState::PandaType::UNKNOWN) {
-    pandaStatus = danger_color;
-    pandaStr = "NO\nPANDA";
-  } else if (Hardware::TICI() && s.scene.started) {
-    pandaStr = QString("SATS %1\nACC %2").arg(s.scene.satelliteCount).arg(fmin(10, s.scene.gpsAccuracy), 0, 'f', 2);
-    pandaStatus = sm["liveLocationKalman"].getLiveLocationKalman().getGpsOK() ? good_color : warning_color;
+    pandaStatus = {{tr("NO"), tr("PANDA")}, danger_color};
+  } else if (s.scene.started && !sm["liveLocationKalman"].getLiveLocationKalman().getGpsOK()) {
+    pandaStatus = {{tr("GPS"), tr("SEARCH")}, warning_color};
   }
-  setProperty("pandaStr", pandaStr);
-  setProperty("pandaStatus", pandaStatus);
+  setProperty("pandaStatus", QVariant::fromValue(pandaStatus));
 }
 
 void Sidebar::paintEvent(QPaintEvent *event) {
@@ -98,11 +119,14 @@ void Sidebar::paintEvent(QPaintEvent *event) {
   p.setPen(Qt::NoPen);
   p.setRenderHint(QPainter::Antialiasing);
 
-  // static imgs
-  p.setOpacity(0.65);
-  p.drawImage(settings_btn.x(), settings_btn.y(), settings_img);
+  p.fillRect(rect(), QColor(57, 57, 57));
+
+  // buttons
+  p.setOpacity(settings_pressed ? 0.65 : 1.0);
+  p.drawPixmap(settings_btn.x(), settings_btn.y(), settings_img);
+  p.setOpacity(onroad && flag_pressed ? 0.65 : 1.0);
+  p.drawPixmap(home_btn.x(), home_btn.y(), onroad ? flag_img : home_img);
   p.setOpacity(1.0);
-  p.drawImage(60, 1080 - 180 - 40, home_img);
 
   // network
   int x = 58;
@@ -113,13 +137,13 @@ void Sidebar::paintEvent(QPaintEvent *event) {
     x += 37;
   }
 
-  configFont(p, "Open Sans", 35, "Regular");
+  configFont(p, "Inter", 35, "Regular");
   p.setPen(QColor(0xff, 0xff, 0xff));
   const QRect r = QRect(50, 247, 100, 50);
   p.drawText(r, Qt::AlignCenter, net_type);
 
   // metrics
-  drawMetric(p, "TEMP", QString("%1°C").arg(temp_val), temp_status, 338);
-  drawMetric(p, panda_str, "", panda_status, 518);
-  drawMetric(p, "CONNECT\n" + connect_str, "", connect_status, 676);
+  drawMetric(p, temp_status.first, temp_status.second, 338);
+  drawMetric(p, panda_status.first, panda_status.second, 496);
+  drawMetric(p, connect_status.first, connect_status.second, 654);
 }
