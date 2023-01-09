@@ -5,49 +5,13 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QStackedWidget>
-#include <QTimer>
 #include <QWidget>
 
 
 #include "selfdrive/ui/qt/widgets/controls.h"
 
 // ********** settings window + top-level panels **********
-
-class DevicePanel : public QWidget {
-  Q_OBJECT
-public:
-  explicit DevicePanel(QWidget* parent = nullptr);
-signals:
-  void reviewTrainingGuide();
-  void showDriverView();
-};
-
-class TogglesPanel : public QWidget {
-  Q_OBJECT
-public:
-  explicit TogglesPanel(QWidget *parent = nullptr);
-};
-
-class SoftwarePanel : public QWidget {
-  Q_OBJECT
-public:
-  explicit SoftwarePanel(QWidget* parent = nullptr);
-
-protected:
-  void showEvent(QShowEvent *event) override;
-
-private:
-  QList<LabelControl *> labels;
-  LabelControl *versionLbl;
-  LabelControl *lastUpdateTimeLbl;
-  ButtonControl *updateButton;
-  void updateLabels();
-
-  QFileSystemWatcher *fs_watch;
-};
-
 class SettingsWindow : public QFrame {
   Q_OBJECT
 
@@ -60,7 +24,6 @@ protected:
 
 signals:
   void closeSettings();
-  void offroadTransition(bool offroad);
   void reviewTrainingGuide();
   void showDriverView();
 
@@ -69,4 +32,58 @@ private:
   QWidget *sidebar_widget;
   QButtonGroup *nav_btns;
   QStackedWidget *panel_widget;
+};
+
+class DevicePanel : public ListWidget {
+  Q_OBJECT
+public:
+  explicit DevicePanel(SettingsWindow *parent);
+signals:
+  void reviewTrainingGuide();
+  void showDriverView();
+
+private slots:
+  void poweroff();
+  void reboot();
+  void updateCalibDescription();
+
+private:
+  Params params;
+};
+
+class TogglesPanel : public ListWidget {
+  Q_OBJECT
+public:
+  explicit TogglesPanel(SettingsWindow *parent);
+};
+
+class SoftwarePanel : public ListWidget {
+  Q_OBJECT
+public:
+  explicit SoftwarePanel(QWidget* parent = nullptr);
+
+private:
+  void showEvent(QShowEvent *event) override;
+  void updateLabels();
+
+  LabelControl *gitBranchLbl;
+  LabelControl *gitCommitLbl;
+  LabelControl *osVersionLbl;
+  LabelControl *versionLbl;
+  LabelControl *lastUpdateLbl;
+  ButtonControl *updateBtn;
+
+  Params params;
+  QFileSystemWatcher *fs_watch;
+};
+
+class C2NetworkPanel: public QWidget {
+  Q_OBJECT
+public:
+  explicit C2NetworkPanel(QWidget* parent = nullptr);
+
+private:
+  void showEvent(QShowEvent *event) override;
+  QString getIPAddress();
+  LabelControl *ipaddress;
 };
